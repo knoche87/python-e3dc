@@ -49,27 +49,7 @@ class SendError(Exception):
 
     pass
 
-class IdlePeriod(TypedDict):
-    day: int
-    start: Tuple[int, int]
-    end: Tuple[int, int]
-    active: bool 
 
-def IdlePeriod_validate(idlePeriod: IdlePeriod):
-    if not 0 <= idlePeriod["day"] < 7:
-        raise ValueError(f"Idle Period day {idlePeriod['day']} is not in range of 0 to 6")
-    
-    try:
-        start = datetime.time(hour=idlePeriod["start"][0], minute=idlePeriod["start"][1])
-        end = datetime.time(hour=idlePeriod["end"][0], minute=idlePeriod["end"][1])
-
-    except ValueError:
-        raise ValueError(f"Idle Period Day {idlePeriod["day"]} is not between 00:00 and 23:59")
-    
-    if end <= start:
-        raise ValueError(f"Starttime is >= Endtime in Idle Period Day {idlePeriod["day"]}")
-    
-    return True
 
 
 class E3DC:
@@ -79,6 +59,13 @@ class E3DC:
     CONNECT_WEB = 2
 
     _IDLE_TYPE = {"idleCharge": 0, "idleDischarge": 1}
+
+    class IdlePeriod(TypedDict):
+        day: int
+        start: Tuple[int, int]
+        end: Tuple[int, int]
+        active: bool 
+
 
     def __init__(self, connectType: int, **kwargs: Any) -> None:
         """Constructor of an E3DC object.
@@ -433,6 +420,22 @@ class E3DC:
         else:
             return False  # operation did not succeed
 
+    def check_IdlePeriod(self, idlePeriod: IdlePeriod):
+        if not 0 <= idlePeriod["day"] < 7:
+            raise ValueError(f"Idle Period day {idlePeriod['day']} is not in range of 0 to 6")
+        
+        try:
+            start = datetime.time(hour=idlePeriod["start"][0], minute=idlePeriod["start"][1])
+            end = datetime.time(hour=idlePeriod["end"][0], minute=idlePeriod["end"][1])
+
+        except ValueError:
+            raise ValueError(f"Idle Period Day {idlePeriod["day"]} is not between 00:00 and 23:59")
+        
+        if end <= start:
+            raise ValueError(f"Starttime is >= Endtime in Idle Period Day {idlePeriod["day"]}")
+        
+        return True 
+
     def get_idle_periods(self, keepAlive: bool = False):
         """Poll via rscp protocol to get idle periods.
 
@@ -499,7 +502,7 @@ class E3DC:
         if tag != RscpTag.EMS_GET_IDLE_PERIODS:
             return None
 
-        idlePeriods: dict[str, list[IdlePeriod | None]] = {
+        idlePeriods: dict[str, list[E3DC.IdlePeriod | None]] = {
             "idleCharge": [None] * 7,
             "idleDischarge": [None] * 7,
         }
@@ -515,7 +518,7 @@ class E3DC:
             end = rscpFindTag(period, RscpTag.EMS_IDLE_PERIOD_END)
             endHour: int = rscpFindTagIndex(end, RscpTag.EMS_IDLE_PERIOD_HOUR)
             endMin: int = rscpFindTagIndex(end, RscpTag.EMS_IDLE_PERIOD_MINUTE)
-            periodObj: IdlePeriod = {
+            periodObj: E3DC.IdlePeriod = {
                 "day": day,
                 "start": (startHour, startMin),
                 "end": (endHour, endMin),
@@ -587,7 +590,7 @@ class E3DC:
         for idle_type in ["idleCharge", "idleDischarge"]:
             if idle_type in idlePeriods:
                 for idlePeriod in idlePeriods[idle_type]:
-                    if IdlePeriod_validate(idlePeriod):
+                    if self.check_IdlePeriod(idlePeriod):
                         periodList.append(
                             (
                                 RscpTag.EMS_IDLE_PERIOD,
@@ -644,7 +647,7 @@ class E3DC:
                             )
                         )
                     else:
-                        raise TypeError("period in " + idle_type + " is not a dict")
+                        raise TypeError("No valid idlePeriod ")
 
             else:
                 raise TypeError(idle_type + " is not a dict")
