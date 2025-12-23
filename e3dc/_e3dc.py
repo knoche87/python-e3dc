@@ -9,7 +9,7 @@ import struct
 import time
 import uuid
 from calendar import monthrange
-from typing import Any, Literal
+from typing import Any, Literal, Tuple, TypedDict
 
 from ._e3dc_rscp_local import (
     E3DC_RSCP_local,
@@ -48,6 +48,28 @@ class SendError(Exception):
     """Class for Send Error Exception."""
 
     pass
+
+class IdlePeriod(TypedDict):
+    day: int
+    start: Tuple[int, int]
+    end: Tuple[int, int]
+    active: bool 
+
+def IdlePeriod_validate(idlePeriod: IdlePeriod):
+    if not 0 <= idlePeriod["day"] < 7:
+        raise ValueError(f"Idle Period day {idlePeriod['day']} is not in range of 0 to 6")
+    
+    try:
+        start = datetime.time(hour=idlePeriod["start"][0], minute=idlePeriod["start"][1])
+        end = datetime.time(hour=idlePeriod["end"][0], minute=idlePeriod["end"][1])
+
+    except ValueError:
+        raise ValueError(f"Idle Period Day {idlePeriod["day"]} is not between 00:00 and 23:59")
+    
+    if end <= start:
+        raise ValueError(f"Starttime is >= Endtime in Idle Period Day {idlePeriod["day"]}")
+    
+    return True
 
 
 class E3DC:
@@ -477,9 +499,9 @@ class E3DC:
         if tag != RscpTag.EMS_GET_IDLE_PERIODS:
             return None
 
-        idlePeriods: dict[str, list[dict[str, Any]]] = {
-            "idleCharge": [] * 7,
-            "idleDischarge": [] * 7,
+        idlePeriods: dict[str, list[IdlePeriod | None]] = {
+            "idleCharge": [None] * 7,
+            "idleDischarge": [None] * 7,
         }
 
         # initialize
@@ -493,7 +515,7 @@ class E3DC:
             end = rscpFindTag(period, RscpTag.EMS_IDLE_PERIOD_END)
             endHour: int = rscpFindTagIndex(end, RscpTag.EMS_IDLE_PERIOD_HOUR)
             endMin: int = rscpFindTagIndex(end, RscpTag.EMS_IDLE_PERIOD_MINUTE)
-            periodObj = {
+            periodObj: IdlePeriod = {
                 "day": day,
                 "start": (startHour, startMin),
                 "end": (endHour, endMin),
@@ -508,7 +530,7 @@ class E3DC:
         return idlePeriods
 
     def set_idle_periods(
-        self, idlePeriods: dict[str, list[dict[str, Any]]], keepAlive: bool = False
+        self, idlePeriods: dict[str, list[IdlePeriod]], keepAlive: bool = False
     ):
         """Set idle periods via rscp protocol.
 
@@ -565,115 +587,62 @@ class E3DC:
         for idle_type in ["idleCharge", "idleDischarge"]:
             if idle_type in idlePeriods:
                 for idlePeriod in idlePeriods[idle_type]:
-                    if "day" not in idlePeriod:
-                        raise ValueError("day key in " + idle_type + " missing")
-                    elif isinstance(idlePeriod["day"], bool):
-                        raise TypeError("day in " + idle_type + " not a bool")
-                    elif not (0 <= idlePeriod["day"] <= 6):
-                        raise ValueError("day in " + idle_type + " out of range")
-
-                    if idlePeriod.keys() & ["active", "start", "end"]:
-                        if "active" in idlePeriod:
-                            if isinstance(idlePeriod["active"], bool):
-                                idlePeriod["active"] = idlePeriod["active"]
-                            else:
-                                raise TypeError(
-                                    "period "
-                                    + str(idlePeriod["day"])
-                                    + " in "
-                                    + idle_type
-                                    + " not a bool"
-                                )
-
-                        for key in ["start", "end"]:
-                            if key in idlePeriod:
-                                if (
-                                    isinstance(idlePeriod[key], list)
-                                    and len(idlePeriod[key]) == 2
-                                ):
-                                    for i in range(2):
-                                        if isinstance(idlePeriod[key][i], int):
-                                            if idlePeriod[key][i] >= 0 and (
-                                                (i == 0 and idlePeriod[key][i] < 24)
-                                                or (i == 1 and idlePeriod[key][i] < 60)
-                                            ):
-                                                idlePeriod[key][i] = idlePeriod[key][i]
-                                            else:
-                                                raise ValueError(
-                                                    key
-                                                    in " period "
-                                                    + str(idlePeriod["day"])
-                                                    + " in "
-                                                    + idle_type
-                                                    + " is not between 00:00 and 23:59"
-                                                )
-                        if (idlePeriod["start"][0] * 60 + idlePeriod["start"][1]) < (
-                            idlePeriod["end"][0] * 60 + idlePeriod["end"][1]
-                        ):
-                            periodList.append(
-                                (
-                                    RscpTag.EMS_IDLE_PERIOD,
-                                    RscpType.Container,
-                                    [
-                                        (
-                                            RscpTag.EMS_IDLE_PERIOD_TYPE,
-                                            RscpType.UChar8,
-                                            self._IDLE_TYPE[idle_type],
-                                        ),
-                                        (
-                                            RscpTag.EMS_IDLE_PERIOD_DAY,
-                                            RscpType.UChar8,
-                                            idlePeriod["day"],
-                                        ),
-                                        (
-                                            RscpTag.EMS_IDLE_PERIOD_ACTIVE,
-                                            RscpType.Bool,
-                                            idlePeriod["active"],
-                                        ),
-                                        (
-                                            RscpTag.EMS_IDLE_PERIOD_START,
-                                            RscpType.Container,
-                                            [
-                                                (
-                                                    RscpTag.EMS_IDLE_PERIOD_HOUR,
-                                                    RscpType.UChar8,
-                                                    idlePeriod["start"][0],
-                                                ),
-                                                (
-                                                    RscpTag.EMS_IDLE_PERIOD_MINUTE,
-                                                    RscpType.UChar8,
-                                                    idlePeriod["start"][1],
-                                                ),
-                                            ],
-                                        ),
-                                        (
-                                            RscpTag.EMS_IDLE_PERIOD_END,
-                                            RscpType.Container,
-                                            [
-                                                (
-                                                    RscpTag.EMS_IDLE_PERIOD_HOUR,
-                                                    RscpType.UChar8,
-                                                    idlePeriod["end"][0],
-                                                ),
-                                                (
-                                                    RscpTag.EMS_IDLE_PERIOD_MINUTE,
-                                                    RscpType.UChar8,
-                                                    idlePeriod["end"][1],
-                                                ),
-                                            ],
-                                        ),
-                                    ],
-                                )
+                    if IdlePeriod_validate(idlePeriod):
+                        periodList.append(
+                            (
+                                RscpTag.EMS_IDLE_PERIOD,
+                                RscpType.Container,
+                                [
+                                    (
+                                        RscpTag.EMS_IDLE_PERIOD_TYPE,
+                                        RscpType.UChar8,
+                                        self._IDLE_TYPE[idle_type],
+                                    ),
+                                    (
+                                        RscpTag.EMS_IDLE_PERIOD_DAY,
+                                        RscpType.UChar8,
+                                        idlePeriod["day"],
+                                    ),
+                                    (
+                                        RscpTag.EMS_IDLE_PERIOD_ACTIVE,
+                                        RscpType.Bool,
+                                        idlePeriod["active"],
+                                    ),
+                                    (
+                                        RscpTag.EMS_IDLE_PERIOD_START,
+                                        RscpType.Container,
+                                        [
+                                            (
+                                                RscpTag.EMS_IDLE_PERIOD_HOUR,
+                                                RscpType.UChar8,
+                                                idlePeriod["start"][0],
+                                            ),
+                                            (
+                                                RscpTag.EMS_IDLE_PERIOD_MINUTE,
+                                                RscpType.UChar8,
+                                                idlePeriod["start"][1],
+                                            ),
+                                        ],
+                                    ),
+                                    (
+                                        RscpTag.EMS_IDLE_PERIOD_END,
+                                        RscpType.Container,
+                                        [
+                                            (
+                                                RscpTag.EMS_IDLE_PERIOD_HOUR,
+                                                RscpType.UChar8,
+                                                idlePeriod["end"][0],
+                                            ),
+                                            (
+                                                RscpTag.EMS_IDLE_PERIOD_MINUTE,
+                                                RscpType.UChar8,
+                                                idlePeriod["end"][1],
+                                            ),
+                                        ],
+                                    ),
+                                ],
                             )
-                        else:
-                            raise ValueError(
-                                "end time is smaller than start time in period "
-                                + str(idlePeriod["day"])
-                                + " in "
-                                + idle_type
-                                + " is not between 00:00 and 23:59"
-                            )
-
+                        )
                     else:
                         raise TypeError("period in " + idle_type + " is not a dict")
 
